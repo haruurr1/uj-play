@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#86d0ff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ウラウラジャンプ">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="icon.png">
+<title>ウラウラジャンプ</title>
+<style>
+  /* パスワードを入れる画面。ゲームの色にそろえる */
+  :root {
+    --ink: #3a2a2c;
+    --soft: #8a7276;
+    --card: #fffdf4;
+    --butter: #ffe27a;
+    --pink: #ff8fab;
+    --bad: #c2185b;
+    --font: "Hiragino Maru Gothic ProN", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { height: 100%; }
+  body {
+    min-height: 100%;
+    margin: 0;
+    padding: 24px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(#86d0ff, #d9f1ff);
+    color: var(--ink);
+    font: 16px/1.6 var(--font);
+  }
+  main {
+    width: 100%;
+    max-width: 360px;
+    padding: 24px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    background: var(--card);
+    border: 3px solid var(--ink);
+    border-radius: 22px;
+    box-shadow: 0 6px 0 rgba(58, 42, 44, 0.25);
+  }
+  h1 { margin: 0; font-size: 26px; text-align: center; }
+  form { display: flex; flex-direction: column; gap: 14px; }
+  p { margin: 0; }
+  .lead { color: var(--soft); font-weight: 700; text-align: center; }
+  input[type="password"] {
+    width: 100%;
+    padding: 12px 14px;
+    border: 3px solid var(--ink);
+    border-radius: 14px;
+    background: #fff;
+    color: var(--ink);
+    font: inherit;
+    font-size: 18px;
+  }
+  .keep { display: flex; gap: 8px; align-items: center; font-weight: 700; }
+  .keep input { width: 22px; height: 22px; margin: 0; }
+  button {
+    padding: 12px;
+    border: 3px solid var(--ink);
+    border-radius: 999px;
+    background: var(--butter);
+    color: var(--ink);
+    font: inherit;
+    font-size: 20px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; }
+  .bar { height: 12px; overflow: hidden; border: 2px solid var(--ink); border-radius: 999px; background: #fff; }
+  .bar i { display: block; width: 0; height: 100%; background: var(--pink); }
+  .status { min-height: 1.6em; font-weight: 700; text-align: center; }
+  .status.bad { color: var(--bad); }
+  .link { padding: 0; border: 0; background: none; color: var(--soft); font-size: 14px; text-decoration: underline; }
+  :focus-visible { outline: 3px solid #3d9bff; outline-offset: 2px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ウラウラジャンプ</h1>
+  <form id="form">
+    <p class="lead">パスワードを入れてね</p>
+    <input id="pw" type="password" autocomplete="current-password" aria-label="パスワード" required>
+    <label class="keep"><input id="keep" type="checkbox" checked>このスマホでおぼえる</label>
+    <button id="go" type="submit">あそぶ</button>
+  </form>
+  <div id="loading" class="bar" hidden><i id="bar"></i></div>
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+  <button id="forget" class="link" type="button" hidden>パスワードを入れなおす</button>
+</main>
+<script>
+  // ゲームは data.bin にカギをかけて入っている（中身は自分専用ファイル）。
+  // パスワードでカギをあけたら、このページをゲームのページに入れかえる。
+  // ゲームのスクリプトとぶつからないように、ここでは何もグローバルに置かない。
+  (() => {
+    'use strict';
+    const VERSION = '1c80793694da';
+    const DATA = 'data.bin?v=' + VERSION;
+    const SAVED = 'uj-play-key';
+    const $ = (id) => document.getElementById(id);
+    const form = $('form'), pw = $('pw'), keep = $('keep'), go = $('go');
+    const loading = $('loading'), bar = $('bar'), statusEl = $('status'), forgetBtn = $('forget');
+
+    const toB64 = (u8) => btoa(String.fromCharCode.apply(null, u8));
+    const fromB64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+    const say = (text, bad) => {
+      statusEl.textContent = text;
+      statusEl.classList.toggle('bad', !!bad);
+    };
+    const saved = {
+      get() {
+        try {
+          return JSON.parse(localStorage.getItem(SAVED) || 'null');
+        } catch (e) {
+          return null;
+        }
+      },
+      set(v) {
+        try {
+          localStorage.setItem(SAVED, JSON.stringify(v));
+        } catch (e) {
+          /* おぼえられなくても遊べる */
+        }
+      },
+      del() {
+        try {
+          localStorage.removeItem(SAVED);
+        } catch (e) {
+          /* なにもしない */
+        }
+      },
+    };
+    const fail = (kind) => Object.assign(new Error(kind), { kind });
+
+    // カギのかかったファイルを読む。一度読んだら、変わるまではブラウザの中に取っておく
+    let dataPromise = null;
+    async function download() {
+      let cache = null;
+      try {
+        cache = await caches.open('uj-play');
+        const hit = await cache.match(DATA);
+        if (hit) return new Uint8Array(await hit.arrayBuffer());
+      } catch (e) {
+        cache = null;
+      }
+      const res = await fetch(DATA);
+      if (!res.ok) throw fail('net');
+      const total = Number(res.headers.get('content-length')) || 0;
+      let bytes = new Uint8Array(total || 1 << 20);
+      let got = 0;
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (got + value.length > bytes.length) {
+          const more = new Uint8Array(Math.max(bytes.length * 2, got + value.length));
+          more.set(bytes.subarray(0, got));
+          bytes = more;
+        }
+        bytes.set(value, got);
+        got += value.length;
+        if (total) bar.style.width = Math.min(100, (got / total) * 100) + '%';
+      }
+      bytes = bytes.slice(0, got);
+      if (cache) {
+        try {
+          await cache.put(DATA, new Response(bytes));
+          for (const req of await cache.keys()) if (!req.url.endsWith(DATA)) await cache.delete(req);
+        } catch (e) {
+          /* 入らなければ、次もダウンロードする */
+        }
+      }
+      return bytes;
+    }
+
+    // data.bin のならび：'UJ1' 0、くりかえし回数（4バイト）、salt 16、iv 12、そのあとが中身（最後の16バイトはチェック用）
+    function parse(bytes) {
+      if (bytes.length < 52 || String.fromCharCode(bytes[0], bytes[1], bytes[2]) !== 'UJ1' || bytes[3] !== 0) throw fail('format');
+      const iter = new DataView(bytes.buffer, bytes.byteOffset, 8).getUint32(4);
+      return { iter, salt: bytes.slice(8, 24), iv: bytes.slice(24, 36), body: bytes.subarray(36) };
+    }
+
+    async function keyFromPassword(password, data) {
+      const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+      return crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt: data.salt, iterations: data.iter, hash: 'SHA-256' },
+        base,
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['decrypt']
+      );
+    }
+
+    async function unlock(data, key) {
+      let plain;
+      try {
+        plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: data.iv }, key, data.body);
+      } catch (e) {
+        throw fail('wrong');
+      }
+      const stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip'));
+      return new Response(stream).text();
+    }
+
+    async function start(getKey) {
+      go.disabled = true;
+      pw.disabled = true;
+      loading.hidden = false;
+      say('よみこみ中…');
+      try {
+        if (!window.crypto || !crypto.subtle || typeof DecompressionStream === 'undefined') throw fail('old');
+        dataPromise = dataPromise || download();
+        const data = parse(await dataPromise);
+        bar.style.width = '100%';
+        say('カギをあけています…');
+        const key = await getKey(data);
+        const html = await unlock(data, key);
+        if (keep.checked) {
+          const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key));
+          saved.set({ salt: toB64(data.salt), key: toB64(raw) });
+        }
+        dataPromise = null;
+        document.open();
+        document.write(html);
+        document.close();
+        return true;
+      } catch (e) {
+        if (e.kind !== 'wrong') dataPromise = null;
+        loading.hidden = true;
+        go.disabled = false;
+        pw.disabled = false;
+        if (e.kind === 'wrong') say('パスワードがちがうみたい', true);
+        else if (e.kind === 'old') say('このブラウザでは開けないみたい。iPhone を新しくしてね', true);
+        else if (e.kind === 'format') say('ファイルがこわれているみたい', true);
+        else say('よみこめなかったよ。電波のいいところで、もう一度ためしてね', true);
+        return false;
+      }
+    }
+
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const password = pw.value;
+      if (password) start((data) => keyFromPassword(password, data));
+    });
+    forgetBtn.addEventListener('click', () => {
+      saved.del();
+      location.reload();
+    });
+
+    // このスマホでおぼえているときは、そのまま開く
+    const mine = saved.get();
+    if (mine && mine.key) {
+      form.hidden = true;
+      forgetBtn.hidden = false;
+      start((data) => {
+        if (mine.salt !== toB64(data.salt)) throw fail('wrong'); // 新しいパスワードでカギをかけなおしてある
+        return crypto.subtle.importKey('raw', fromB64(mine.key), { name: 'AES-GCM' }, true, ['decrypt']);
+      }).then((ok) => {
+        if (ok) return;
+        if (statusEl.textContent === 'パスワードがちがうみたい') {
+          saved.del();
+          say('パスワードを入れてね');
+        }
+        form.hidden = false;
+        forgetBtn.hidden = true;
+      });
+    }
+  })();
+</script>
+</body>
+</html>
